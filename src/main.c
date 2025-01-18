@@ -1,13 +1,23 @@
-#include "SDL2/SDL.h"
-#include "vulkan/vulkan.h"
+#include "stdio.h"
+#include "window.h"
+#include "vulkan.h"
 
 int main() {
+	printf("Initializing...\n");
+
 	SDL_Init(SDL_INIT_EVERYTHING);
-	SDL_Window* window = SDL_CreateWindow("vk_tracer", 0, 0, 640, 480, SDL_WINDOW_SHOWN | SDL_WINDOW_VULKAN);
+	Window w = new_window();
+	VulkanState vk = new_vulkan_state();
 
-	uint32_t extension_count = 0;
-	vkEnumerateInstanceExtensionProperties(NULL, &extension_count, NULL);
-	printf("Extension count: %i\n", extension_count);
+	printf("Initialized.\n");
 
+	// TODO: Main loop
+
+	printf("Destroying resources...\n");
+
+	destroy_vulkan_state(&vk);
+
+	printf("Destroyed.\n");
+	
 	return 0;
 }
