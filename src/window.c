@@ -6,8 +6,8 @@ Window new_window() {
 		APP_NAME,
 		0, 
 		0, 
-		640, 
-		480, 
+		SURFACE_WIDTH, 
+		SURFACE_HEIGHT,
 		SDL_WINDOW_VULKAN
 	);
 	return (Window){w};

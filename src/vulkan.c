@@ -1,14 +1,15 @@
 #include "vulkan.h"
 
-#include "stdio.h"
+#include "SDL2/SDL_vulkan.h"
 #include "string.h"
 #include "stdbool.h"
 #include "stdlib.h"
 
 #include "exit_codes.h"
 #include "app_name.h"
+#include "build_flags.h"
 
-VulkanState new_vulkan_state() {
+VulkanState new_vulkan_state(Window* window) {
 	VulkanState vk;
 
 	// Create instance
@@ -21,19 +22,53 @@ VulkanState new_vulkan_state() {
 		app.pEngineName = NULL;
 		app.engineVersion = 0;
 		app.apiVersion = VK_API_VERSION_1_3;
-		
+
 		VkInstanceCreateInfo info;
 		info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
 		info.pNext = NULL;
 		info.flags = 0;
 		info.pApplicationInfo = &app;
-		info.enabledLayerCount = 0; // TODO: validation layers
-		info.ppEnabledLayerNames = NULL;
-		info.enabledExtensionCount = 0;
-		info.ppEnabledExtensionNames = NULL;
 
-		if(vkCreateInstance(&info, NULL, &vk.instance) != VK_SUCCESS) {
-			printf("Could not create instance.\n");
+		#ifdef DEBUG
+			info.enabledLayerCount = 1;
+			info.ppEnabledLayerNames = &(const char*){"VK_LAYER_KHRONOS_validation"};
+		#else
+			info.enabledLayerCount = 0;
+			info.ppEnabledLayerNames = NULL;
+		#endif
+		
+		uint32_t exts_len = 0;
+		SDL_Vulkan_GetInstanceExtensions(window->sdl, &exts_len, NULL);
+		const char** window_exts = malloc(sizeof(char*) * exts_len);
+		SDL_Vulkan_GetInstanceExtensions(window->sdl, &exts_len, window_exts);
+
+		#ifdef DEBUG
+			exts_len++;
+		#endif
+
+		const char* exts[exts_len];
+		memcpy(exts, window_exts, sizeof(char*) * (exts_len - 1));
+
+		#ifdef DEBUG
+			exts[exts_len - 1] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+		#endif
+
+		info.enabledExtensionCount = exts_len;
+		info.ppEnabledExtensionNames = exts;
+
+		VkResult res = vkCreateInstance(&info, NULL, &vk.instance);
+		if(res != VK_SUCCESS) {
+			printf("Error %i: Could not create instance.\n", res);
+			exit(ERR_VULKAN);
+		}
+	}
+
+	// Create surface
+	{
+		bool res = SDL_Vulkan_CreateSurface(window->sdl, vk.instance, &vk.surface);
+		if(!res) {
+			printf("Could not create surface.\n");
+			exit(ERR_BAD_SURFACE);
 		}
 	}
 
@@ -80,15 +115,15 @@ VulkanState new_vulkan_state() {
 
 			bool swapchain = false;
 			for(int j = 0; j < exts_len; j++) {
-				if(strcmp(exts[j].extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+				if(strcmp(exts[j].extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME) == 0) {
 					swapchain = true;
 				}
 			}
-			if(!swapchain) {
+			if(!(swapchain)) {
 				continue;
 			}
 
-		vk.physical_device = devices[i];
+			vk.physical_device = devices[i];
 		}
 
 		// Exit if we haven't found an eligible device
@@ -115,14 +150,166 @@ VulkanState new_vulkan_state() {
 	 	info.flags = 0;
 	 	info.queueCreateInfoCount = 1;
 	 	info.pQueueCreateInfos = &queue;
-	 	info.enabledExtensionCount = 1;
+
 	 	const char* swapchain_ext = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+	 	info.enabledExtensionCount = 1;
 	 	info.ppEnabledExtensionNames = &swapchain_ext;
+
 	 	info.pEnabledFeatures = NULL;
-	 
-		if(vkCreateDevice(vk.physical_device, &info, NULL, &vk.device) != VK_SUCCESS) {
-			printf("Error! Could not create logical device.\n");
+
+	 	VkResult res = vkCreateDevice(vk.physical_device, &info, NULL, &vk.device);
+		if(res != VK_SUCCESS) {
+			printf("Error %i: Could not create logical device.\n", res);
 			exit(ERR_VULKAN);
+		}
+	}
+
+	// Create swapchain, images, and image views
+	{
+		// Query surface capabilities
+		uint32_t image_count = 0;
+		VkSurfaceTransformFlagBitsKHR pre_transform;
+		{
+			VkSurfaceCapabilitiesKHR abilities;
+			VkResult res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vk.physical_device, vk.surface, &abilities);
+			if(res != VK_SUCCESS) {
+				printf("Error %i: Could not get physical device surface capabilities.\n", res);
+				exit(ERR_VULKAN);
+			}
+
+			if(abilities.minImageExtent.width  > SURFACE_WIDTH
+			|| abilities.maxImageExtent.width  < SURFACE_WIDTH
+			|| abilities.minImageExtent.height > SURFACE_HEIGHT
+			|| abilities.maxImageExtent.height < SURFACE_HEIGHT) {
+				printf("Surface KHR extents are not compatible with configured surface sizes.\n", res);
+				exit(ERR_BAD_SURFACE);
+			}
+
+			image_count = abilities.minImageCount + 1;
+			if(abilities.maxImageCount > 0 && image_count > abilities.maxImageCount) {
+				image_count = abilities.maxImageCount;
+			}
+
+			pre_transform = abilities.currentTransform;
+		}
+
+		// Choose surface format
+		VkSurfaceFormatKHR surface_format;
+		{
+			uint32_t formats_len;
+			vkGetPhysicalDeviceSurfaceFormatsKHR(vk.physical_device, vk.surface, &formats_len, NULL);
+			if(formats_len == 0) {
+				printf("Physical device doesn't support any formats?\n");
+				exit(ERR_BAD_SURFACE);
+			}
+
+			VkSurfaceFormatKHR formats[formats_len];
+			vkGetPhysicalDeviceSurfaceFormatsKHR(vk.physical_device, vk.surface, &formats_len, formats);
+
+			surface_format = formats[0];
+			for(int i = 0; i < formats_len; i++) {
+				if(formats[i].format == VK_FORMAT_B8G8R8A8_SRGB && formats[i].colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+					surface_format = formats[i];
+					break;
+				}
+			}
+		}
+
+		// Choose presentation mode
+		// 
+		// Default to VK_PRESENT_MODE_FIFO_KHR, as this is the only mode required to
+		// be supported by the spec.
+		VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+		{
+			uint32_t modes_len;
+			VkResult res = vkGetPhysicalDeviceSurfacePresentModesKHR(vk.physical_device, vk.surface, &modes_len, NULL);
+			if(res != VK_SUCCESS) {
+				printf("Error %i: Could not get number of physical device surface present modes.\n", res);
+				exit(ERR_VULKAN);
+			}
+
+			VkPresentModeKHR modes[modes_len];
+			res = vkGetPhysicalDeviceSurfacePresentModesKHR(vk.physical_device, vk.surface, &modes_len, modes);
+			if(res != VK_SUCCESS) {
+				printf("Error %i: Could not get physical device surface present modes.\n", res);
+				exit(ERR_VULKAN);
+			}
+
+			for(int i = 0; i < modes_len; i++) {
+				if(modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+					present_mode = modes[i];
+					break;
+				}
+			}
+		}
+
+		// Create swapchain
+		VkSwapchainCreateInfoKHR info;
+		info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+		info.pNext = NULL;
+		info.flags = 0; // TODO mutable format or any other flags?
+		info.surface = vk.surface;
+		info.minImageCount = image_count; // TODO get this value.
+		info.imageFormat = surface_format.format;
+		info.imageColorSpace = surface_format.colorSpace;
+		info.imageExtent = (VkExtent2D){SURFACE_WIDTH, SURFACE_HEIGHT};
+		info.imageArrayLayers = 1;
+		info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; // TODO probably right, but we'll see.
+		info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE; // TODO needs to be different if compute is in different family from present?
+		info.queueFamilyIndexCount = 0; // Not used in exclusive mode. Need to check for concurrent.
+		info.pQueueFamilyIndices = NULL; // Also not used in exclusive mode, see above.
+		info.preTransform = pre_transform;
+		info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+		info.presentMode = present_mode;
+		info.clipped = VK_TRUE;
+		info.oldSwapchain = VK_NULL_HANDLE;
+
+		VkResult res = vkCreateSwapchainKHR(vk.device, &info, NULL, &vk.swapchain);
+		if(res != VK_SUCCESS) {
+			printf("Error %i: Could not create swapchain.\n", res);
+			exit(ERR_VULKAN);
+		}
+
+		// Create swapchain images and image views
+		{
+			// Images
+			VkResult res = vkGetSwapchainImagesKHR(vk.device, vk.swapchain, &vk.images_len, NULL);
+			if(res != VK_SUCCESS) {
+				printf("Error %i: Could not get number of swapchain images.\n", res);
+				exit(ERR_VULKAN);
+			}
+
+			res = vkGetSwapchainImagesKHR(vk.device, vk.swapchain, &vk.images_len, vk.swap_images);
+			if(res != VK_SUCCESS) {
+				printf("Error %i: Could not get swapchain images.\n", res);
+				exit(ERR_VULKAN);
+			}
+
+			// Image views
+			for(int i = 0; i < vk.images_len; i++) {
+				VkImageViewCreateInfo info;
+				info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+				info.pNext = NULL;
+				info.flags = 0;
+				info.image = vk.swap_images[i];
+				info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+				info.format = surface_format.format;
+				info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+				info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+				info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+				info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+				info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+				info.subresourceRange.baseMipLevel = 0;
+				info.subresourceRange.levelCount = 1;
+				info.subresourceRange.baseArrayLayer = 0;
+				info.subresourceRange.layerCount = 1;
+				
+				res = vkCreateImageView(vk.device, &info, NULL, &vk.swap_views[i]);
+				if(res != VK_SUCCESS) {
+					printf("Error %i: Could not create image views.\n", res);
+					exit(ERR_VULKAN);
+				}
+			}
 		}
 	}
 
@@ -130,6 +317,11 @@ VulkanState new_vulkan_state() {
 }
 
 void destroy_vulkan_state(VulkanState* vk) {
+	for(int i = 0; i < vk->images_len; i++) {
+		vkDestroyImageView(vk->device, vk->swap_views[i], NULL);
+	}
+	vkDestroySwapchainKHR(vk->device, vk->swapchain, NULL);
+	vkDestroySurfaceKHR(vk->instance, vk->surface, NULL);
 	vkDestroyDevice(vk->device, NULL);
 	vkDestroyInstance(vk->instance, NULL);
 }

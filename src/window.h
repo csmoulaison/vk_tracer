@@ -3,6 +3,9 @@
 
 #include "SDL2/SDL.h"
 
+#define SURFACE_WIDTH 640
+#define SURFACE_HEIGHT 640
+
 struct {
 	SDL_Window* sdl;
 } typedef Window;
