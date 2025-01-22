@@ -20,6 +20,8 @@ struct {
 	VkImage swap_images[SWAP_IMAGES_MAX];
 	VkImageView swap_views[SWAP_IMAGES_MAX];
 	uint32_t images_len;
+
+	VkRenderPass renderpass;
 } typedef VulkanState;
 
 VulkanState new_vulkan_state(Window* window);

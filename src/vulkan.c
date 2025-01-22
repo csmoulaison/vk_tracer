@@ -313,7 +313,27 @@ VulkanState new_vulkan_state(Window* window) {
 		}
 	}
 
+	// Create render pass
+	{
+		VkRenderPassCreateInfo info;
+		info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+		info.pNext = NULL;
+		info.flags = 0;
+		info.attachmentCount = //
+		info.pAttachments = //
+		info.subpassCount = //
+		info.pSubpasses = //
+		info.dependencyCount = //
+		info.pDependencies = //
+		
+		VkResult res = vkCreateRenderPass(vk.device, &info, NULL, &vk.renderpass);
+	}
+
 	return vk;
+}
+
+void update_vulkan_state(VulkanState* vk) {
+
 }
 
 void destroy_vulkan_state(VulkanState* vk) {
